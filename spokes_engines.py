@@ -18,7 +18,7 @@ class SMCIctSpokeEngine:
         c1_high, c1_low = high_prices[-3], low_prices[-3]
         c2_high, c2_low = high_prices[-2], low_prices[-2]
         c3_high, c3_low = high_prices[-1], low_prices[-1]
-        
+
         if c3_low > c1_high:
             fvg_size = c3_low - c1_high
             proposed_entry = c1_high + (fvg_size * 0.5)
@@ -84,7 +84,7 @@ class HFTScalperSpokeEngine:
     def analyze_orderflow_velocity(self, bid_stream, ask_stream) -> dict:
         if len(bid_stream) < 10: return {"status": "NO_SETUP"}
         velocity_delta = np.diff(bid_stream[-10:]).sum()
-        
+
         if velocity_delta > 0.00050:
             return {
                 "status": "SETUP_FOUND",
@@ -117,21 +117,38 @@ class MTFRSIDivergenceEngine:
 
     def calculate_rsi(self, close_prices, period: int = 14) -> np.ndarray:
         deltas = np.diff(close_prices)
-        seed = deltas[:period+1]
+        seed = deltas[:period]  # FIX: was deltas[:period+1], which pulled in one
+                                 # extra delta than the seed window should contain.
         up = seed[seed >= 0].sum() / period
         down = -seed[seed < 0].sum() / period
-        rs = up / down if down != 0 else 0
-        rsi = np.zeros_like(close_prices)
-        rsi[:period+1] = 100. - 100. / (1. + rs)
 
-        for i in range(period+1, len(close_prices)):
-            delta = deltas[i-1]
+        # FIX (RSI edge case): previously `rs = up / down if down != 0 else 0`
+        # forced RSI to 0 whenever there were zero losing candles in the
+        # window. Zero losses is a maximally BULLISH/overbought condition,
+        # so RSI should resolve near 100 in that case, not 0 — the old code
+        # had this exactly backwards, which would make
+        # verify_mtf_momentum_alignment() silently fail to flag strong
+        # uptrends as overbought.
+        if down == 0:
+            rsi_seed_value = 100.0 if up > 0 else 50.0
+        else:
+            rs = up / down
+            rsi_seed_value = 100. - 100. / (1. + rs)
+
+        rsi = np.zeros_like(close_prices, dtype=float)
+        rsi[:period + 1] = rsi_seed_value
+
+        for i in range(period + 1, len(close_prices)):
+            delta = deltas[i - 1]
             up_val = delta if delta > 0 else 0.
             down_val = -delta if delta < 0 else 0.
             up = (up * (period - 1) + up_val) / period
             down = (down * (period - 1) + down_val) / period
-            rs = up / down if down != 0 else 0
-            rsi[i] = 100. - 100. / (1. + rs)
+            if down == 0:
+                rsi[i] = 100.0 if up > 0 else 50.0
+            else:
+                rs = up / down
+                rsi[i] = 100. - 100. / (1. + rs)
         return rsi
 
     def verify_mtf_momentum_alignment(self, w1_bias: str, m5_rsi_value: float) -> dict:
@@ -159,10 +176,10 @@ class HarmonicPatternSpokeEngine:
     def validate_harmonic_nodes(self, x: float, a: float, b: float, c: float, d: float) -> dict:
         xa, ab, bc = abs(a - x), abs(b - a), abs(c - b)
         if xa == 0 or ab == 0 or bc == 0: return {"status": "NO_SETUP"}
-        
+
         b_to_xa, c_to_ab, d_to_xa = ab / xa, bc / ab, abs(d - x) / xa
         direction = "BUY" if d < c else "SELL"
-        
+
         if self._is_within_tolerance(0.618, b_to_xa) and (0.382 <= c_to_ab <= 0.886) and self._is_within_tolerance(0.786, d_to_xa):
             return self._build_payload("GARTLEY", direction, d, abs(d - x) * 0.1, abs(d - c))
         if (0.382 <= b_to_xa <= 0.500) and (0.382 <= c_to_ab <= 0.886) and self._is_within_tolerance(0.886, d_to_xa):
@@ -221,7 +238,7 @@ class MTFPriceActionSniperSpoke:
         elif w1_bias == "BEARISH":
             if (m5_upper_wick / m5_range) >= 0.65 and (m5_body / m5_range) <= 0.35: # Shooting star
                 return self._compile_payload("SELL", current_m5_price, m30_structure["structural_high"], m30_structure["target_low"])
-        
+
         return {"status": "WAITING_FOR_CANDLE_CLOSE"}
 
     def _compile_payload(self, order_type, entry, sl, tp) -> dict:

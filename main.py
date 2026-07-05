@@ -122,7 +122,7 @@ _checker.execute_preflight_checks(hard_fail=_is_direct_run)
 
 # Import the actual FastAPI application AFTER checks, and expose it at
 # module level — this `app` object is what @vercel/python and uvicorn need.
-from orchestrator import app  # noqa: E402
+from init_orchestrator import app  # noqa: E402
 
 if __name__ == "__main__":
     import uvicorn
